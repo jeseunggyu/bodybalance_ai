@@ -4,5 +4,12 @@
 
 ## 빠른 실행
 ```bash
+# 1. 가상환경
+python -m venv venv && source venv/bin/activate
+
+# 2. 패키지
+pip install -r requirements.txt
+
+# 3. 실행
 python run.py
 ```
