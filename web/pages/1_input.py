@@ -225,5 +225,9 @@ if st.button("✅ 입력 완료 — 다음 단계로", type="primary",
             "survey_posture_tilt":  SIDE_OPT[q4],
             "survey_shoulder_drop": SIDE_OPT[q5],
         }
+        # 새 입력이 제출될 때마다 이전 분석 결과를 무효화
+        st.session_state.analysis_result = None
+        st.session_state.analysis_input_id = None
+        st.session_state.input_id = id(st.session_state.user_input)
         st.success("✅ 입력 완료! 사이드바에서 `📊 Analysis`로 이동하세요.")
         st.balloons()

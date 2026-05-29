@@ -1,5 +1,7 @@
 """Step 2 — AI 분석"""
 import sys
+import json
+import hashlib
 from pathlib import Path
 import streamlit as st
 import joblib
@@ -30,26 +32,45 @@ except FileNotFoundError:
              "`python -m src.preprocess && python -m src.train`")
     st.stop()
 
-# ── 동적 데이터 예측 ──────────────────────────────────
-pred_X = [user_input.get(f, 0) for f in pred_pkg["features"]]
-pred_y = pred_pkg["model"].predict([pred_X])[0]
-dynamic = dict(zip(pred_pkg["targets"], pred_y))
 
-# ── 비대칭 분류 ───────────────────────────────────────
-clf_X = [
-    (user_input.get(f, 0) if f in user_input else dynamic.get(f, 0))
-    for f in clf_pkg["features"]
-]
-asym_type  = int(clf_pkg["pipeline"].predict([clf_X])[0])
-probas     = clf_pkg["pipeline"].predict_proba([clf_X])[0]
-confidence = float(probas[asym_type])
+def _input_hash(data: dict) -> str:
+    return hashlib.md5(
+        json.dumps(data, sort_keys=True, default=str).encode()
+    ).hexdigest()
 
-# 세션 저장
-st.session_state.analysis_result = {
-    "dynamic":   dynamic,
-    "asym_type": asym_type,
-    "confidence": confidence,
-}
+
+current_hash = _input_hash(user_input)
+cached_hash  = st.session_state.get("analysis_input_id")
+
+# 입력이 바뀐 경우(또는 분석 결과가 없는 경우) 항상 재계산
+if st.session_state.get("analysis_result") is None or cached_hash != current_hash:
+    # ── 동적 데이터 예측 ──────────────────────────────────
+    pred_X = [user_input.get(f, 0) for f in pred_pkg["features"]]
+    pred_y = pred_pkg["model"].predict([pred_X])[0]
+    dynamic = dict(zip(pred_pkg["targets"], pred_y))
+
+    # ── 비대칭 분류 ───────────────────────────────────────
+    clf_X = [
+        (user_input.get(f, 0) if f in user_input else dynamic.get(f, 0))
+        for f in clf_pkg["features"]
+    ]
+    asym_type  = int(clf_pkg["pipeline"].predict([clf_X])[0])
+    probas     = clf_pkg["pipeline"].predict_proba([clf_X])[0]
+    confidence = float(probas[asym_type])
+
+    # 세션 저장 (어떤 입력으로 분석했는지 함께 기록)
+    st.session_state.analysis_result = {
+        "dynamic":    dynamic,
+        "asym_type":  asym_type,
+        "confidence": confidence,
+        "probas":     probas.tolist(),
+    }
+    st.session_state.analysis_input_id = current_hash
+else:
+    dynamic    = st.session_state.analysis_result["dynamic"]
+    asym_type  = st.session_state.analysis_result["asym_type"]
+    confidence = st.session_state.analysis_result["confidence"]
+    probas = st.session_state.analysis_result["probas"]
 
 # ── 유형 판정 표시 ────────────────────────────────────
 st.subheader("🧭 비대칭 유형 판정")

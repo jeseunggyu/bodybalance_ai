@@ -1,5 +1,7 @@
 """Step 3 — 교정 추천"""
 import sys
+import json
+import hashlib
 from pathlib import Path
 import streamlit as st
 
@@ -15,6 +17,14 @@ if st.session_state.get("analysis_result") is None:
 
 user_input = st.session_state.user_input
 result     = st.session_state.analysis_result
+
+# 입력이 변경됐는데 분석을 다시 하지 않은 경우 경고
+current_hash = hashlib.md5(
+    json.dumps(user_input, sort_keys=True, default=str).encode()
+).hexdigest()
+if st.session_state.get("analysis_input_id") != current_hash:
+    st.warning("⚠️ 입력값이 변경되었습니다. `📊 Analysis` 페이지에서 재분석 후 다시 확인해주세요.")
+    st.stop()
 
 output = recommend(
     user_input= user_input,
