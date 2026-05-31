@@ -104,7 +104,7 @@ def _check_leg_length(user_input, recs):
     diff = user_input.get("leg_length_diff_mm", 0)
     if abs(diff) > CLINICAL["leg_length_threshold_mm"]:
         side = "좌측" if diff < 0 else "우측"
-        lift = round(abs(diff) * CLINICAL["leg_length_correction_ratio"], 1)
+        lift = round(abs(diff) * CLINICAL["leg_lift_correction_ratio"], 1)
         recs.append(Recommendation(
             device=    f"힐 리프트 ({side})",
             spec=      f"두께 {lift}mm",

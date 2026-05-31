@@ -90,6 +90,120 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# ══════════════════════════════════════════════════════════
+# 직접 측정 기반 임상 비대칭 평가
+# ══════════════════════════════════════════════════════════
+# [중요] 본 데이터의 동적 예측기는 정적 발형태 → 동적 보행지표를
+# 예측하지만 검증 결과 예측력이 매우 낮아(평균회귀) 입력이 달라져도
+# 출력이 평균에 수렴, 사실상 항상 '정상'으로 표시된다. 또한 하지 길이
+# 차이는 학습 피처에 포함되지 않아 분석에 전혀 반영되지 않는다.
+# 따라서 좌우가 '실제로 다른' 직접 측정값을 문헌 기준으로 직접 평가한다.
+
+# 하지 길이 차이(LLD) — Gurney (2002), Knutson (2005)
+LLD_NORMAL_MM   = 6.0    # 미만이면 기능적으로 무의미 (Gurney 2002)
+LLD_MILD_MM     = 10.0   # 6~10mm 경도
+LLD_MODERATE_MM = 20.0   # 10~20mm 중등도, 초과 시 현저 (Knutson 2005)
+
+# 좌우 발 형태 비대칭 — 정상인의 좌우 차이는 대부분 1~4mm
+# (Atamturk 2009; Krishan 2013 족부 계측). 아래는 '주의' 임계값.
+FOOT_LENGTH_DIFF_MM = 8.0   # ≈ 신발 0.5문수(8.46mm)
+FOOT_WIDTH_DIFF_MM  = 6.0
+ARCH_HEIGHT_DIFF_MM = 6.0   # 좌우 아치 높이 차 → 편측 회내 시사
+HEEL_WIDTH_DIFF_MM  = 5.0
+
+SURVEY_DIRECTIONAL_MIN = 2   # 같은 방향 2개 이상 → 비대칭 시사
+
+_SEVERITY_NAME = {0: "정상", 1: "경도", 2: "중등도", 3: "현저"}
+
+
+def _grade(value, mild, moderate, marked):
+    """절대값을 4등급으로: 0 정상 / 1 경도 / 2 중등도 / 3 현저"""
+    v = abs(value)
+    if v >= marked:   return 3
+    if v >= moderate: return 2
+    if v >= mild:     return 1
+    return 0
+
+
+def clinical_assessment(user_input: dict) -> dict:
+    """
+    직접 측정값만으로 구조적 비대칭을 평가한다 (ML 비의존).
+
+    반환: {severity, severity_name, findings[], leg_length_evaluated}
+    """
+    findings = []
+
+    def _add(item, raw_diff, mild, moderate, marked, unit, note):
+        grade = _grade(raw_diff, mild, moderate, marked)
+        if grade == 0:
+            return
+        side = "좌측" if raw_diff < 0 else "우측"
+        findings.append({
+            "item": item, "side": side,
+            "value": f"{abs(raw_diff):.1f}{unit}",
+            "grade": grade, "grade_name": _SEVERITY_NAME[grade],
+            "note": note,
+        })
+
+    # 1) 하지 길이 차이 — 가장 직접적인 구조적 비대칭 (입력된 경우만)
+    leg_known = bool(user_input.get("leg_length_known", False))
+    if leg_known:
+        diff = user_input.get("leg_length_diff_mm", 0) or 0
+        _add("하지 길이 차이", diff,
+             LLD_NORMAL_MM, LLD_MILD_MM, LLD_MODERATE_MM, "mm",
+             "구조적 하지 길이 차이 (Gurney 2002 / Knutson 2005)")
+
+    # 2) 좌우 발 형태 비대칭 (직접 측정)
+    def _pair(lk, rk):
+        l, r = user_input.get(lk), user_input.get(rk)
+        if l is None or r is None:
+            return None
+        return l - r
+
+    for name, lk, rk, thr in [
+        ("발 길이 비대칭",   "foot_length_L_mm", "foot_length_R_mm", FOOT_LENGTH_DIFF_MM),
+        ("발 너비 비대칭",   "foot_width_L_mm",  "foot_width_R_mm",  FOOT_WIDTH_DIFF_MM),
+        ("아치 높이 비대칭", "arch_height_L_mm", "arch_height_R_mm", ARCH_HEIGHT_DIFF_MM),
+        ("뒤꿈치 폭 비대칭", "heel_width_L_mm",  "heel_width_R_mm",  HEEL_WIDTH_DIFF_MM),
+    ]:
+        d = _pair(lk, rk)
+        if d is None:
+            continue
+        _add(name, d, thr, thr * 1.5, thr * 2.0, "mm",
+             f"좌우 차이 임계값 {thr:.0f}mm (족부 계측 정상 범위 초과)")
+
+    # 3) 설문 방향성 — 좌/우 자각 증상이 한쪽으로 일관되면 비대칭 시사
+    side_keys = ["survey_shoe_wear", "survey_fatigue_side",
+                 "survey_posture_tilt", "survey_shoulder_drop"]
+    sides = [user_input.get(k) for k in side_keys]
+    n_left  = sum(1 for s in sides if s == -1)
+    n_right = sum(1 for s in sides if s == 1)
+    dominant = max(n_left, n_right)
+    if dominant >= SURVEY_DIRECTIONAL_MIN:
+        side = "좌측" if n_left >= n_right else "우측"
+        grade = 2 if dominant >= 3 else 1
+        findings.append({
+            "item": "자가진단 방향성", "side": side,
+            "value": f"{dominant}개 항목",
+            "grade": grade, "grade_name": _SEVERITY_NAME[grade],
+            "note": "여러 자각 증상이 한쪽으로 일관됨",
+        })
+
+    severity = max((f["grade"] for f in findings), default=0)
+    # 동일 최고등급 소견이 2개 이상이면 누적 부담으로 한 단계 상향
+    if severity > 0:
+        n_top = sum(1 for f in findings if f["grade"] == severity)
+        if n_top >= 2 and severity < 3:
+            severity += 1
+
+    return {
+        "severity": severity,
+        "severity_name": _SEVERITY_NAME[severity],
+        "findings": sorted(findings, key=lambda f: -f["grade"]),
+        "leg_length_evaluated": leg_known,
+    }
+
+
 ASYM_TYPE_NAMES = {
     0: "대칭 정상 (Symmetric Normal)",
     1: "좌우 압력 비대칭 (Asymmetric Loading)",

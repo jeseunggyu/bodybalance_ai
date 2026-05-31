@@ -83,12 +83,23 @@ else:
 
     if L_file and R_file:
         if st.button("🔬 자동 측정 실행", type="secondary"):
-            tmp_L = Path("/tmp/L.ply"); tmp_L.write_bytes(L_file.read())
-            tmp_R = Path("/tmp/R.ply"); tmp_R.write_bytes(R_file.read())
+            import tempfile
 
-            with st.spinner("LiDAR 처리 중..."):
-                feat_L = process_scan(str(tmp_L))
-                feat_R = process_scan(str(tmp_R))
+            def _save_tmp(uploaded):
+                suffix = Path(uploaded.name).suffix or ".ply"
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+                tmp.write(uploaded.read())
+                tmp.close()
+                return tmp.name
+
+            try:
+                with st.spinner("LiDAR 처리 중..."):
+                    feat_L = process_scan(_save_tmp(L_file))
+                    feat_R = process_scan(_save_tmp(R_file))
+            except ImportError:
+                st.error("LiDAR 스캔 처리에는 `open3d` 패키지가 필요합니다.\n\n"
+                         "터미널에서 설치 후 다시 시도하세요:\n```\npip install open3d\n```")
+                st.stop()
 
             foot_data.update({
                 "foot_length_L_mm":   feat_L["foot_length_mm"],
