@@ -2,7 +2,6 @@
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import numpy as np
-import open3d as o3d
 
 
 @dataclass
@@ -19,6 +18,12 @@ class FootMeasurement:
 
 def load_scan(path: str | Path) -> np.ndarray:
     """스캔 파일 로드 → 정규화된 point cloud"""
+    try:
+        import open3d as o3d
+    except ImportError:
+        raise ImportError(
+            "open3d 패키지가 필요합니다: pip install open3d"
+        )
     p = Path(path)
     if p.suffix == ".ply":
         pcd = o3d.io.read_point_cloud(str(p))
