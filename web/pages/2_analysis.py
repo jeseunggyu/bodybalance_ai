@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from src.config import PREDICTOR_PKL, CLASSIFIER_PKL
 from src.labeling import clinical_assessment
+from src.features import derive_for_input
 
 st.title("📊 Step 2 — 비대칭 분석")
 
@@ -44,15 +45,16 @@ def _ml_grade(prob_normal: float) -> int:
     """
     ML 정상 확률을 모집단 분포 기반으로 재보정해 이상 등급 산출.
 
-    모집단(UNB P150 실측 추론) 분포:
-      중앙값 ≈ 0.93, Q25 ≈ 0.85, Q10 ≈ 0.78
+    모집단(UNB P150, 좌우차이 파생피처 포함 재학습 후 앱 추론) 분포:
+      중앙값 ≈ 0.18, Q25 ≈ 0.13, Q10 ≈ 0.08
+    (정상 확률의 절대값보다 '모집단 대비 상대 위치'가 의미 있으므로
+     백분위 기반으로 등급화한다.)
 
-    기준 해석: 중앙값 이상 → 정상, 중앙값 이하로 내려갈수록 이상 신호.
-    (기존 argmax 기준의 0.50 임계값 대신 모집단 중앙값을 기준으로 삼음)
+    기준 해석: 중앙값 이상 → 정상, 아래로 내려갈수록 이상 신호.
     """
-    if prob_normal >= 0.93:   return 0   # 모집단 중앙값 이상 → 정상
-    if prob_normal >= 0.85:   return 1   # Q25 이상 → 경도 이상 신호
-    if prob_normal >= 0.75:   return 2   # Q10 이상 → 중등도 이상 신호
+    if prob_normal >= 0.18:   return 0   # 모집단 중앙값 이상 → 정상
+    if prob_normal >= 0.13:   return 1   # Q25 이상 → 경도 이상 신호
+    if prob_normal >= 0.08:   return 2   # Q10 이상 → 중등도 이상 신호
     return 3                             # Q10 미만 → 현저한 이상 신호
 
 
@@ -72,12 +74,15 @@ current_hash = _input_hash(user_input)
 cached_hash  = st.session_state.get("analysis_input_id")
 
 if st.session_state.get("analysis_result") is None or cached_hash != current_hash:
-    pred_X = [user_input.get(f, 0) for f in pred_pkg["features"]]
+    # 좌우 차이/비율/비대칭 지수 파생 피처를 추론 입력에도 동일하게 주입
+    feat_input = {**user_input, **derive_for_input(user_input)}
+
+    pred_X = [feat_input.get(f, 0) for f in pred_pkg["features"]]
     pred_y = pred_pkg["model"].predict([pred_X])[0]
     dynamic = dict(zip(pred_pkg["targets"], pred_y))
 
     clf_X = [
-        (user_input.get(f, 0) if f in user_input else dynamic.get(f, 0))
+        (feat_input.get(f, 0) if f in feat_input else dynamic.get(f, 0))
         for f in clf_pkg["features"]
     ]
     probas     = clf_pkg["pipeline"].predict_proba([clf_X])[0]
@@ -158,9 +163,10 @@ with st.container(border=True):
     mc1, mc2, mc3 = st.columns([2, 1, 1])
     mc1.markdown(f"**ML 압력 패턴 분류**  \n{ml_label}")
     mc2.metric("이상 등급", f"{SEV_COLOR[ml_grade]} {SEV_NAME[ml_grade]}")
-    normalized_pct = max(0, (0.93 - prob_normal) / (0.93 - 0.15) * 100)
+    # 모집단 중앙값(0.18) → 0%, 최저(0.03) → 100%
+    normalized_pct = min(100, max(0, (0.18 - prob_normal) / (0.18 - 0.03) * 100))
     mc3.metric("이상 신호 강도", f"{normalized_pct:.0f}%",
-               help="정상 확률이 모집단 중앙값(93%)에서 얼마나 벗어났는지 (0%=중앙값, 100%=최저)")
+               help="정상 확률이 모집단 중앙값(18%)에서 얼마나 벗어났는지 (0%=중앙값, 100%=최저)")
 
 # 임상 소견들
 for f in clinical["findings"]:

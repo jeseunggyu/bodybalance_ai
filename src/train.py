@@ -12,14 +12,16 @@ from src.config import (
     DYNAMIC_TARGETS, ASYM_LABELS,
 )
 from src.labeling import add_labels
+from src.features import add_derived_features, DERIVED_FEATURES
 
 # 학습에 사용할 피처 (공개 데이터에 있는 것만)
+# 발 치수 절대값 + 좌우 차이/비율/비대칭 지수(파생) — 모델이 좌우 불균형에 반응하도록
 TRAIN_FEATURES = [
     "foot_length_L_mm",
     "foot_length_R_mm",
     "foot_width_L_mm",
     "foot_width_R_mm",
-]
+] + DERIVED_FEATURES
 
 
 def train_predictor(train_df, test_df):
@@ -109,6 +111,10 @@ def main():
     train_df = pd.read_csv(TRAIN_CSV)
     test_df  = pd.read_csv(TEST_CSV)
     print(f"📊 Train {len(train_df)} / Test {len(test_df)}")
+
+    # 좌우 차이/비율/비대칭 지수 파생 피처 추가
+    train_df = add_derived_features(train_df)
+    test_df  = add_derived_features(test_df)
 
     train_predictor(train_df, test_df)
     train_classifier(train_df, test_df)
