@@ -113,6 +113,59 @@ def _norm_side(v):
     return 0
 
 
+def modulate_dynamic_by_geometry(dynamic: dict, user_input: dict) -> dict:
+    """
+    ML이 예측한 좌/우 동적지표를 사용자가 실측한 좌우 발 기하 비율로 보정.
+
+    RandomForest는 좌우를 거의 같은 값으로 예측하는 경향이 있어(평균회귀),
+    예측값만으로는 좌우 차이가 드러나지 않는다. 사용자가 실제로 측정한
+    좌우 발 길이·너비 비율을 ML 추정 부하량에 곱해, 측정된 기하 비대칭이
+    부하 추정에 반영되도록 한다. (ML 추정 × 실측 기하 보정)
+
+    좌우 차이가 없으면 비율이 1이라 원본 예측을 그대로 유지한다.
+    """
+    fl_L = user_input.get("foot_length_L_mm")
+    fl_R = user_input.get("foot_length_R_mm")
+    fw_L = user_input.get("foot_width_L_mm")
+    fw_R = user_input.get("foot_width_R_mm")
+    if None in (fl_L, fl_R, fw_L, fw_R):
+        return dynamic
+
+    eps = 1e-6
+    # 면적성 지표는 길이×너비 비, 압력성 지표는 너비 비로 보정
+    area_L = (fl_L * fw_L)
+    area_R = (fl_R * fw_R)
+    area_ratio_L = area_L / ((area_L + area_R) / 2 + eps)
+    area_ratio_R = area_R / ((area_L + area_R) / 2 + eps)
+    w_ratio_L = fw_L / ((fw_L + fw_R) / 2 + eps)
+    w_ratio_R = fw_R / ((fw_L + fw_R) / 2 + eps)
+    l_ratio_L = fl_L / ((fl_L + fl_R) / 2 + eps)
+    l_ratio_R = fl_R / ((fl_L + fl_R) / 2 + eps)
+
+    out = dict(dynamic)
+
+    def _scale(key_L, key_R, rL, rR):
+        if key_L in out:
+            out[key_L] = out[key_L] * rL
+        if key_R in out:
+            out[key_R] = out[key_R] * rR
+
+    _scale("contact_area_L", "contact_area_R", area_ratio_L, area_ratio_R)
+    _scale("peak_heel_L",     "peak_heel_R",     w_ratio_L, w_ratio_R)
+    _scale("peak_midfoot_L",  "peak_midfoot_R",  w_ratio_L, w_ratio_R)
+    _scale("peak_forefoot_L", "peak_forefoot_R", w_ratio_L, w_ratio_R)
+    _scale("arch_index_L",    "arch_index_R",    l_ratio_L, l_ratio_R)
+
+    # 보정된 좌우 부하로 GRF 비대칭 재계산 (입력에 따라 실제로 변함)
+    sumL = out.get("peak_heel_L", 0) + out.get("peak_midfoot_L", 0) + out.get("peak_forefoot_L", 0)
+    sumR = out.get("peak_heel_R", 0) + out.get("peak_midfoot_R", 0) + out.get("peak_forefoot_R", 0)
+    if sumL + sumR > 0:
+        out["grf_asymmetry_pct"] = abs(sumL - sumR) / (sumL + sumR) * 100
+    # CoP 비대칭도 아치 좌우차 기반으로 살짝 반영
+    out["cop_asymmetry"] = abs(out.get("arch_index_L", 0) - out.get("arch_index_R", 0))
+    return out
+
+
 def add_synthetic_user_features(df, seed: int = 42):
     """
     학습 DataFrame에 사용자 직접 입력 피처를 '실측 비대칭에 비례해' 합성.

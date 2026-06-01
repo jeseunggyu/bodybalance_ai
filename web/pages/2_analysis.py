@@ -11,7 +11,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from src.config import PREDICTOR_PKL, CLASSIFIER_PKL
 from src.labeling import clinical_assessment
-from src.features import derive_for_input, user_direct_for_input
+from src.features import (
+    derive_for_input, user_direct_for_input, modulate_dynamic_by_geometry,
+)
 
 st.title("📊 Step 2 — 비대칭 분석")
 
@@ -85,6 +87,9 @@ if st.session_state.get("analysis_result") is None or cached_hash != current_has
     pred_X = [feat_input.get(f, 0) for f in pred_pkg["features"]]
     pred_y = pred_pkg["model"].predict([pred_X])[0]
     dynamic = dict(zip(pred_pkg["targets"], pred_y))
+
+    # ML 추정 좌/우 부하를 사용자 실측 발 기하 비율로 보정 (입력 반응성 확보)
+    dynamic = modulate_dynamic_by_geometry(dynamic, user_input)
 
     clf_X = [
         (feat_input.get(f, 0) if f in feat_input else dynamic.get(f, 0))
