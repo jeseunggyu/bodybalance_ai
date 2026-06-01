@@ -55,3 +55,111 @@ def derive_for_input(user_input: dict) -> dict:
     if any(v is None for v in vals):
         return {f: 0.0 for f in DERIVED_FEATURES}
     return _derive(*vals)
+
+
+# ══════════════════════════════════════════════════════════
+# 사용자 직접 입력 피처 (하지 길이 + 설문)
+# ══════════════════════════════════════════════════════════
+# 분류기의 기존 핵심 입력(grf/cop)은 라벨을 만든 동적지표라, 앱에서는
+# predictor 추정값(거의 평균)으로 채워져 항상 정상으로 분류되는 문제가 있었다.
+# 하지 길이 차이와 설문을 '직접 입력 피처'로 추가하면 추정값에 의존하지 않고
+# 사용자 입력이 비대칭 판단에 직접 반영된다. 미입력 시 0(중립).
+USER_DIRECT_FEATURES = [
+    "leg_length_diff_mm",     # 하지 길이 차이 (좌-우, mm). 미입력 0
+    "survey_shoe_wear",       # -1(좌)/0/+1(우)/2(모름)
+    "survey_fatigue_side",    # -1/0/+1/2
+    "survey_posture_tilt",    # -1/0/+1/2
+    "survey_shoulder_drop",   # -1/0/+1/2
+    "survey_pain_flag",       # 통증 부위 호소 여부 0/1 (pain_location>0)
+    "survey_direction_score", # 좌/우 쏠림 일관성: 같은 방향 항목 수의 부호합
+]
+
+_SURVEY_SIDE_KEYS = ["survey_shoe_wear", "survey_fatigue_side",
+                     "survey_posture_tilt", "survey_shoulder_drop"]
+
+
+def _survey_direction_score(d) -> int:
+    """좌/우(-1/+1) 응답의 합 — 한쪽으로 쏠릴수록 절댓값 큼. '모름'(2)/0 무시."""
+    score = 0
+    for k in _SURVEY_SIDE_KEYS:
+        v = d.get(k, 0)
+        if v in (-1, 1):
+            score += v
+    return score
+
+
+def user_direct_for_input(user_input: dict) -> dict:
+    """앱 user_input → 사용자 직접 입력 피처 dict (미입력은 0/중립)."""
+    leg = user_input.get("leg_length_diff_mm", 0) if \
+        user_input.get("leg_length_known", False) else 0
+    pain = user_input.get("survey_pain_location", 0)
+    return {
+        "leg_length_diff_mm":     leg or 0,
+        "survey_shoe_wear":       _norm_side(user_input.get("survey_shoe_wear")),
+        "survey_fatigue_side":    _norm_side(user_input.get("survey_fatigue_side")),
+        "survey_posture_tilt":    _norm_side(user_input.get("survey_posture_tilt")),
+        "survey_shoulder_drop":   _norm_side(user_input.get("survey_shoulder_drop")),
+        "survey_pain_flag":       1 if (pain not in (0, 4, None)) else 0,
+        "survey_direction_score": _survey_direction_score({
+            k: _norm_side(user_input.get(k)) for k in _SURVEY_SIDE_KEYS
+        }),
+    }
+
+
+def _norm_side(v):
+    """설문 좌/우 값 정규화: -1/0/1은 그대로, '모름'(2)·None은 0(중립)."""
+    if v in (-1, 0, 1):
+        return v
+    return 0
+
+
+def add_synthetic_user_features(df, seed: int = 42):
+    """
+    학습 DataFrame에 사용자 직접 입력 피처를 '실측 비대칭에 비례해' 합성.
+
+    공개 데이터셋엔 하지 길이·설문이 없으므로, 실측 grf/cop 비대칭이 큰
+    샘플일수록 (1) 하지 길이 차이가 크고 (2) 설문이 한쪽으로 쏠릴 확률이
+    높도록 확률적으로 생성한다. 좌우 방향은 좌우 압력 우세(peak 합)로 결정.
+    → 비대칭이 실제로 있는 샘플에 일관된 '사용자 신호'가 부여되어,
+      분류기가 이 신호에 반응하도록 학습된다.
+    """
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    df = df.copy()
+    n = len(df)
+
+    grf = df["grf_asymmetry_pct"].to_numpy()          # 0~17.6
+    cop = df["cop_asymmetry"].to_numpy()              # 0~0.24
+    # 비대칭 강도 0~1 정규화 (둘의 평균)
+    grf_n = np.clip(grf / 15.0, 0, 1)
+    cop_n = np.clip(cop / 0.20, 0, 1)
+    intensity = (grf_n + cop_n) / 2
+
+    # 좌우 방향: 좌측 peak 합 > 우측이면 좌측(-1) 우세
+    peakL = df[["peak_heel_L", "peak_midfoot_L", "peak_forefoot_L"]].sum(axis=1).to_numpy()
+    peakR = df[["peak_heel_R", "peak_midfoot_R", "peak_forefoot_R"]].sum(axis=1).to_numpy()
+    side = np.where(peakL >= peakR, -1, 1)            # -1 좌 우세, +1 우 우세
+
+    # (1) 하지 길이 차이: 강도에 비례(최대 ~18mm) + 노이즈, 방향은 side
+    leg = side * (intensity * 18.0 + rng.normal(0, 1.5, n))
+    leg = np.where(intensity < 0.15, rng.normal(0, 1.0, n), leg)  # 약한 비대칭은 거의 0
+    df["leg_length_diff_mm"] = np.round(leg, 1)
+
+    # (2) 설문 4항목: 강도가 높을수록 side 방향 응답 확률↑, 아니면 0/모름
+    for k in _SURVEY_SIDE_KEYS:
+        p_directional = np.clip(intensity * 0.9, 0, 0.9)  # 쏠림 응답 확률
+        draw = rng.random(n)
+        val = np.where(draw < p_directional, side, 0)
+        # 일부는 '모름'(여기선 0으로 — 정규화 정책과 일치)
+        df[k] = val.astype(int)
+
+    # (3) 통증 호소: 강도 비례 확률
+    pain_p = np.clip(intensity * 0.7, 0, 0.7)
+    df["survey_pain_flag"] = (rng.random(n) < pain_p).astype(int)
+
+    # (4) 방향 일관성 점수
+    df["survey_direction_score"] = (
+        df["survey_shoe_wear"] + df["survey_fatigue_side"]
+        + df["survey_posture_tilt"] + df["survey_shoulder_drop"]
+    )
+    return df

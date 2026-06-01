@@ -12,7 +12,10 @@ from src.config import (
     DYNAMIC_TARGETS, ASYM_LABELS,
 )
 from src.labeling import add_labels
-from src.features import add_derived_features, DERIVED_FEATURES
+from src.features import (
+    add_derived_features, DERIVED_FEATURES,
+    add_synthetic_user_features, USER_DIRECT_FEATURES,
+)
 
 # 학습에 사용할 피처 (공개 데이터에 있는 것만)
 # 발 치수 절대값 + 좌우 차이/비율/비대칭 지수(파생) — 모델이 좌우 불균형에 반응하도록
@@ -66,12 +69,19 @@ def train_classifier(train_df, test_df):
     train_df = add_labels(train_df)
     test_df  = add_labels(test_df)
 
+    # 사용자 직접 입력 피처(하지 길이·설문)를 실측 비대칭에 비례해 합성.
+    # train/test 시드를 달리해 누수 방지.
+    train_df = add_synthetic_user_features(train_df, seed=42)
+    test_df  = add_synthetic_user_features(test_df,  seed=7)
+
     print("\n  Train 클래스 분포:")
     for cls, count in train_df["asym_type"].value_counts().sort_index().items():
         print(f"    {cls} ({ASYM_LABELS[cls]}): {count}샘플")
 
-    # 분류는 정적 피처 + 동적 타겟까지 활용
-    clf_features = TRAIN_FEATURES + DYNAMIC_TARGETS
+    # [중요] 분류기 입력에서 동적 타겟(grf/cop/arch — 라벨을 만든 값)을 제외한다.
+    # 앱에서는 이 값들을 알 수 없어 추정값(거의 평균)으로 채워지므로 순환·무반응
+    # 문제를 일으켰다. 대신 사용자가 실제로 입력하는 직접 피처를 사용한다.
+    clf_features = TRAIN_FEATURES + USER_DIRECT_FEATURES
     X_tr = train_df[clf_features].values
     y_tr = train_df["asym_type"].values
     X_te = test_df[clf_features].values
