@@ -33,10 +33,15 @@ output = recommend(
     confidence= result["confidence"],
 )
 
-# ── 입력 품질 표시 ────────────────────────────────────
-c1, c2 = st.columns(2)
-c1.metric("AI 분류 신뢰도", output["ai_confidence"])
-c2.metric("입력 품질", output["input_quality"])
+SEV_COLOR = {0: "🟢", 1: "🟡", 2: "🟠", 3: "🔴"}
+SEV_NAME  = {0: "정상", 1: "경도", 2: "중등도", 3: "현저"}
+combined  = result.get("combined", result["clinical"]["severity"])
+
+c1, c2, c3 = st.columns(3)
+c1.metric("종합 비대칭 등급",
+          f"{SEV_COLOR[combined]} {SEV_NAME[combined]}")
+c2.metric("AI 분류 신뢰도", output["ai_confidence"])
+c3.metric("입력 품질", output["input_quality"])
 
 st.divider()
 
