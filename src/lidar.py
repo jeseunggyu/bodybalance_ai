@@ -41,15 +41,31 @@ def load_scan(path: str | Path) -> np.ndarray:
 
 
 def align_foot(points: np.ndarray) -> np.ndarray:
-    """PCA로 표준 좌표계 정렬"""
+    """PCA로 표준 좌표계 정렬 (축 방향까지 일관되게 보정)"""
     centered = points - points.mean(axis=0)
     _, eigvecs = np.linalg.eigh(np.cov(centered.T))
-    eigvecs = eigvecs[:, ::-1]
+    eigvecs = eigvecs[:, ::-1]          # 분산 큰 순: x=길이, y=너비, z=높이
     aligned = centered @ eigvecs
 
+    # z(높이): 바닥이 0이 되도록
     if aligned[:, 2].mean() > 0:
         aligned[:, 2] *= -1
     aligned[:, 2] -= aligned[:, 2].min()
+
+    # x(길이) 방향 보정: 표준 정렬은 '뒤꿈치=x_min, 발가락=x_max'.
+    # 발끝(발가락)은 뾰족해 끝으로 갈수록 급히 좁아지고, 뒤꿈치는 둥글어
+    # 끝에서도 폭이 어느 정도 유지된다. 양 끝 5% 구간의 폭을 비교해
+    # 더 좁은(뾰족한) 끝이 x_max(발가락)에 오도록 맞춘다.
+    x = aligned[:, 0]
+    L = x.max() - x.min()
+    end_lo = aligned[x < x.min() + L * 0.05]
+    end_hi = aligned[x > x.max() - L * 0.05]
+    w_lo = (end_lo[:, 1].max() - end_lo[:, 1].min()) if len(end_lo) else 0
+    w_hi = (end_hi[:, 1].max() - end_hi[:, 1].min()) if len(end_hi) else 0
+    if w_lo < w_hi:                     # 좁은(발가락) 끝이 x_min이면 뒤집기
+        aligned[:, 0] *= -1
+        x = aligned[:, 0]
+
     return aligned
 
 
@@ -59,11 +75,13 @@ def extract_measurements(points: np.ndarray) -> FootMeasurement:
     L = x.max() - x.min()
 
     # 발 길이/너비
-    fore = x > (x.max() - L * 0.3)
+    # 발 너비는 '발볼(ball)' 부위 = 발 길이의 약 60~78% 지점의 최대 횡폭으로
+    # 측정한다(해부학적 ball width). 발가락 끝(상위 0~10%)은 좁아서 제외.
+    ball = (x > x.min() + L * 0.60) & (x < x.min() + L * 0.78)
     heel = x < (x.min() + L * 0.2)
     mid  = (x > x.min() + L * 0.4) & (x < x.min() + L * 0.6)
 
-    foot_width = float(y[fore].max() - y[fore].min())
+    foot_width = float(y[ball].max() - y[ball].min()) if ball.any() else 0.0
     heel_width = float(y[heel].max() - y[heel].min())
 
     # 아치 높이 (내측 중족부의 z 최대값)
