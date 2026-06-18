@@ -3,8 +3,9 @@
 
 근거 문헌:
 - Gurney (2002): 하지 길이 차이 보정 비율
-- Razeghi & Batt (2000): 아치 서포트 처방 가이드라인
-- Kogler et al. (1996): 내측 웨지 각도 결정
+- Cavanagh & Rodgers (1987): Arch Index 기반 평발 진단
+- Razeghi & Batt (2002): 발 유형 분류 / 아치 서포트 처방 가이드라인
+- Kogler et al. (1996): 종아치 지지 메커니즘
 - Postema et al. (1998): 중족골 패드 효과
 """
 from dataclasses import dataclass, asdict
@@ -21,7 +22,8 @@ CLINICAL = {
     # Razeghi & Batt (2000), Sports Medicine
     # 평발 교정용 아치 서포트 높이 가이드라인
     "arch_support_factor": 100,  # AI 차이 × 100 = 권장 높이(mm)
-    "arch_support_max_mm": 12,   # 최대 12mm (그 이상은 불편)
+    "arch_support_max_mm": 40,   # 최대 40mm (그 이상은 불편)
+    "arch_support_min_mm": 5,    # 이 값 미만이면 교정 불필요(체감 효과 미미)
 
     # Kogler et al. (1996), Foot & Ankle Int.
     # 회내 교정 웨지 각도
@@ -37,9 +39,13 @@ REFERENCES = {
     "gurney_2002": (
         "Gurney B. Leg length discrepancy. Gait & Posture. 2002;15(2):195-206."
     ),
-    "razeghi_2000": (
+    "razeghi_2002": (
         "Razeghi M, Batt ME. Foot type classification: a critical review of "
         "current methods. Gait & Posture. 2002;15(3):282-291."
+    ),
+    "cavanagh_1987": (
+        "Cavanagh PR, Rodgers MM. The arch index: a useful measure from "
+        "footprints. Journal of Biomechanics. 1987;20(5):547-551."
     ),
     "kogler_1996": (
         "Kogler GF, et al. Biomechanics of longitudinal arch support "
@@ -126,6 +132,10 @@ def _add_bilateral_arch_support(predicted, recs):
         CLINICAL["arch_support_max_mm"]
     )
 
+    # 권장 높이가 임계값 미만이면 교정 불필요(체감 효과 미미)
+    if height < CLINICAL["arch_support_min_mm"]:
+        return
+
     recs.append(Recommendation(
         device=    "양측 아치 서포트 깔창",
         spec=      f"높이 {height}mm, 종아치 지지형 (양측 동일)",
@@ -133,7 +143,7 @@ def _add_bilateral_arch_support(predicted, recs):
             f"평균 Arch Index {ai_avg:.3f} > 정상 상한 0.26. "
             f"Cavanagh & Rodgers (1987) 기준 평발 진단."
         ),
-        evidence=  REFERENCES["razeghi_2000"],
+        evidence=  REFERENCES["cavanagh_1987"],
         confidence="높음" if ai_avg > 0.30 else "중간",
         priority=  1,
     ))
@@ -155,14 +165,18 @@ def _add_unilateral_arch_support(predicted, recs):
         CLINICAL["arch_support_max_mm"]
     )
 
+    # 권장 높이가 임계값 미만이면 교정 불필요(체감 효과 미미)
+    if height < CLINICAL["arch_support_min_mm"]:
+        return
+
     recs.append(Recommendation(
         device=    f"비대칭 아치 서포트 ({side})",
         spec=      f"높이 {height}mm (반대측은 평상시 깔창)",
         rationale= (
-            f"좌우 Arch Index 차이 {diff:.3f} > 임상 임계값 0.03. "
+            f"좌우 Arch Index 차이 {diff:.3f} > 임상 임계값 0.02. "
             f"{side} 발이 더 평발 경향 (AI={ai_high:.3f})."
         ),
-        evidence=  REFERENCES["razeghi_2000"],
+        evidence=  REFERENCES["razeghi_2002"],
         confidence="높음" if diff > 0.05 else "중간",
         priority=  1,
     ))
