@@ -24,6 +24,11 @@ CLINICAL = {
     "arch_support_factor": 100,  # AI 차이 × 100 = 권장 높이(mm)
     "arch_support_max_mm": 40,   # 최대 40mm (그 이상은 불편)
     "arch_support_min_mm": 5,    # 이 값 미만이면 교정 불필요(체감 효과 미미)
+    "arch_diff_threshold": 0.02, # 좌우 Arch Index 차 임계값(Menz 1998 기반)
+
+    # 실측 아치 높이(mm) 기반 평발/비대칭 판정 (사용자 직접 입력값 사용)
+    "arch_height_flat_mm":   15.0,  # 평균 아치 높이 이 미만이면 평발 경향
+    "arch_height_diff_mm":   6.0,   # 좌우 아치 높이 차 이 이상이면 비대칭
 
     # Kogler et al. (1996), Foot & Ankle Int.
     # 회내 교정 웨지 각도
@@ -79,12 +84,12 @@ def recommend(user_input: dict, predicted: dict,
 
     _check_leg_length(user_input, recs)
 
-    if asym_type == 2:    # 양측 평발
-        _add_bilateral_arch_support(predicted, recs)
-    elif asym_type == 3:  # 좌우 아치 비대칭
-        _add_unilateral_arch_support(predicted, recs)
-    elif asym_type == 1:  # 압력 비대칭
-        _add_loading_correction(predicted, recs)
+    # 교정 장비는 ML 분류(asym_type)에만 의존하지 않고 실제 수치 지표로 판단한다.
+    # 아치 관련 추천은 사용자가 직접 입력한 아치 높이(user_input)를, 압력 비대칭은
+    # 예측값(predicted)을 근거로 한다. (ML 분류는 참고용)
+    _add_bilateral_arch_support(user_input, recs)   # 양측 평발이면 추가
+    _add_unilateral_arch_support(user_input, recs)  # 좌우 아치 차 크면 추가
+    _add_loading_correction(predicted, recs)        # 압력 비대칭 크면 추가
 
     recs.sort(key=lambda r: r.priority)
 
@@ -123,61 +128,70 @@ def _check_leg_length(user_input, recs):
             priority=  1,
         ))
 
-def _add_bilateral_arch_support(predicted, recs):
-    """Razeghi & Batt (2000) 기반 양측 평발 교정"""
-    ai_avg = (predicted["arch_index_L"] + predicted["arch_index_R"]) / 2
-    # 정상 상한(0.26)과의 차이 × 100 = 권장 지지 높이
+def _add_bilateral_arch_support(user_input, recs):
+    """Cavanagh & Rodgers (1987) 기반 양측 평발 교정 (실측 아치 높이 사용)"""
+    aL = user_input.get("arch_height_L_mm")
+    aR = user_input.get("arch_height_R_mm")
+    if aL is None or aR is None:
+        return
+    arch_avg = (aL + aR) / 2
+    flat_mm  = CLINICAL["arch_height_flat_mm"]
+
+    # 평균 아치 높이가 평발 기준 이상이면 정상 → 추천 불필요
+    if arch_avg >= flat_mm:
+        return
+
+    # 정상 하한(15mm)과의 부족분에 비례한 지지 높이
     height = min(
-        round((ai_avg - 0.26) * CLINICAL["arch_support_factor"], 1),
+        round((flat_mm - arch_avg) + CLINICAL["arch_support_min_mm"], 1),
         CLINICAL["arch_support_max_mm"]
     )
-
-    # 권장 높이가 임계값 미만이면 교정 불필요(체감 효과 미미)
-    if height < CLINICAL["arch_support_min_mm"]:
-        return
 
     recs.append(Recommendation(
         device=    "양측 아치 서포트 깔창",
         spec=      f"높이 {height}mm, 종아치 지지형 (양측 동일)",
         rationale= (
-            f"평균 Arch Index {ai_avg:.3f} > 정상 상한 0.26. "
+            f"평균 아치 높이 {arch_avg:.1f}mm < 정상 하한 {flat_mm:.0f}mm. "
             f"Cavanagh & Rodgers (1987) 기준 평발 진단."
         ),
         evidence=  REFERENCES["cavanagh_1987"],
-        confidence="높음" if ai_avg > 0.30 else "중간",
+        confidence="높음" if arch_avg < flat_mm - 3 else "중간",
         priority=  1,
     ))
 
 
-def _add_unilateral_arch_support(predicted, recs):
-    """Menz (1998) 기반 좌우 비대칭 아치 교정"""
-    ai_L, ai_R = predicted["arch_index_L"], predicted["arch_index_R"]
-    diff = abs(ai_L - ai_R)
+def _add_unilateral_arch_support(user_input, recs):
+    """Menz (1998) 기반 좌우 비대칭 아치 교정 (실측 아치 높이 사용)"""
+    aL = user_input.get("arch_height_L_mm")
+    aR = user_input.get("arch_height_R_mm")
+    if aL is None or aR is None:
+        return
+    diff = abs(aL - aR)
 
-    # 더 평발인 쪽(AI 큰 쪽)에 서포트
-    if ai_L > ai_R:
-        side, ai_high = "좌측", ai_L
-    else:
-        side, ai_high = "우측", ai_R
+    # 좌우 아치 높이 차가 임계값(6mm) 미만이면 비대칭 교정 불필요
+    if diff < CLINICAL["arch_height_diff_mm"]:
+        return
 
+    # 더 평발인 쪽(아치 낮은 쪽)에 서포트
+    side = "좌측" if aL < aR else "우측"
+
+    # 좌우 차이에 비례한 보정 높이
     height = min(
-        round((ai_high - 0.26) * CLINICAL["arch_support_factor"], 1),
+        round(diff, 1),
         CLINICAL["arch_support_max_mm"]
     )
-
-    # 권장 높이가 임계값 미만이면 교정 불필요(체감 효과 미미)
-    if height < CLINICAL["arch_support_min_mm"]:
-        return
+    height = max(height, CLINICAL["arch_support_min_mm"])
 
     recs.append(Recommendation(
         device=    f"비대칭 아치 서포트 ({side})",
         spec=      f"높이 {height}mm (반대측은 평상시 깔창)",
         rationale= (
-            f"좌우 Arch Index 차이 {diff:.3f} > 임상 임계값 0.02. "
-            f"{side} 발이 더 평발 경향 (AI={ai_high:.3f})."
+            f"좌우 아치 높이 차이 {diff:.1f}mm > 임계값 "
+            f"{CLINICAL['arch_height_diff_mm']:.0f}mm. "
+            f"{side} 발 아치가 더 낮음 ({min(aL, aR):.1f}mm)."
         ),
         evidence=  REFERENCES["razeghi_2002"],
-        confidence="높음" if diff > 0.05 else "중간",
+        confidence="높음" if diff > 10 else "중간",
         priority=  1,
     ))
 
@@ -188,6 +202,10 @@ def _add_loading_correction(predicted, recs):
     pR = predicted.get("peak_forefoot_R", 0)
     grf_si = predicted.get("grf_asymmetry_pct", 0)
     heavy = "좌측" if pL > pR else "우측"
+
+    # GRF 대칭 지수가 임상 임계값(10%) 미만이면 압력 보정 불필요
+    if grf_si < CLINICAL["si_threshold_clinical"]:
+        return
 
     recs.append(Recommendation(
         device=    f"충격 흡수 깔창 + 중족골 패드 ({heavy})",
